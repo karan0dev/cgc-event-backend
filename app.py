@@ -1,16 +1,14 @@
-import os
-from flask import Flask
+from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from dotenv import load_dotenv
+import os
 from datetime import datetime
-from flask import Flask, request, jsonify
 
-# Load the secret URL from the .env file
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app) # This is the specific line that unlocks the data
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
