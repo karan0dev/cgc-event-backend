@@ -4,25 +4,29 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import os
 from datetime import datetime
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app) # This is the specific line that unlocks the data
+CORS(app)
 
+# --- CONFIGURATION ---
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'fallback-secret-key-change-in-production')
 
 db = SQLAlchemy(app)
+jwt = JWTManager(app)
 
 # --- DATABASE MODELS ---
-
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    role = db.Column(db.String(20), default='Student') # 'Student' or 'Organizer'
-    # Relationships
+    password_hash = db.Column(db.String(256), nullable=True) # Added for JWT Login
+    role = db.Column(db.String(20), default='Student') 
     events_organized = db.relationship('Event', backref='organizer', lazy=True)
     registrations = db.relationship('Registration', backref='student', lazy=True)
 
@@ -40,66 +44,82 @@ class Registration(db.Model):
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
-# --- ROUTES ---
 
-# --- API ENDPOINTS ---
+# --- AUTHENTICATION ROUTES ---
 
-@app.route('/api/users', methods=['POST'])
-def create_user():
+@app.route('/api/register', methods=['POST'])
+def register_admin():
     data = request.get_json()
-    
-    # Basic validation to prevent empty submissions
-    if not data or not data.get('name') or not data.get('email'):
-        return jsonify({"error": "Name and email are required"}), 400
-        
-    # Check if user already exists
-    if User.query.filter_by(email=data['email']).first():
-        return jsonify({"error": "User with this email already exists"}), 400
+    if not data or not data.get('name') or not data.get('email') or not data.get('password'):
+        return jsonify({"error": "Name, email, and password required"}), 400
 
+    if User.query.filter_by(email=data['email']).first():
+        return jsonify({"error": "User already exists"}), 400
+
+    hashed_pw = generate_password_hash(data['password'])
     new_user = User(
-        name=data['name'],
-        email=data['email'],
-        role=data.get('role', 'Student') # Defaults to 'Student' if not provided
+        name=data['name'], 
+        email=data['email'], 
+        password_hash=hashed_pw, 
+        role='Organizer'
     )
     db.session.add(new_user)
     db.session.commit()
-    
-    return jsonify({"message": "User created successfully", "user_id": new_user.id}), 201
+    return jsonify({"message": "Admin created successfully"}), 201
 
-@app.route('/api/events', methods=['POST'])
-def create_event():
+@app.route('/api/login', methods=['POST'])
+def login():
     data = request.get_json()
+    user = User.query.filter_by(email=data.get('email')).first()
     
-    # Convert string date from frontend to Python datetime object
-    try:
-        event_date = datetime.strptime(data['event_date'], '%Y-%m-%d %H:%M:%S')
-    except ValueError:
-        return jsonify({"error": "Invalid date format. Use YYYY-MM-DD HH:MM:SS"}), 400
+    # Verify user exists and password matches the hash
+    if not user or not user.password_hash or not check_password_hash(user.password_hash, data.get('password')):
+        return jsonify({"error": "Invalid email or password"}), 401
+        
+    # Generate the security token
+    access_token = create_access_token(identity=str(user.id))
+    return jsonify({"access_token": access_token, "role": user.role}), 200
 
-    new_event = Event(
-        title=data['title'],
-        description=data['description'],
-        event_date=event_date,
-        organizer_id=data['organizer_id']
-    )
-    db.session.add(new_event)
-    db.session.commit()
-    
-    return jsonify({"message": "Event created successfully", "event_id": new_event.id}), 201
+
+# --- EVENT ROUTES ---
 
 @app.route('/api/events', methods=['GET'])
 def get_events():
-    events = Event.query.order_by(Event.event_date.asc()).all()
-    event_list = []
-    for event in events:
-        event_list.append({
-            "id": event.id,
-            "title": event.title,
-            "description": event.description,
-            "event_date": event.event_date.strftime('%Y-%m-%d %H:%M:%S'),
-            "organizer_id": event.organizer_id
-        })
-    return jsonify(event_list), 200
+    events = Event.query.all()
+    return jsonify([{
+        'id': e.id,
+        'title': e.title,
+        'description': e.description,
+        'event_date': e.event_date.isoformat(),
+        'organizer_id': e.organizer_id
+    } for e in events]), 200
+
+@app.route('/api/events', methods=['POST'])
+@jwt_required() # <-- THE GATEKEEPER: Rejects requests without a valid token
+def create_event():
+    data = request.get_json()
+    current_user_id = get_jwt_identity() # Extracts the Admin ID from the token
+    
+    if not data or not data.get('title') or not data.get('event_date'):
+        return jsonify({'error': 'Missing title or event_date'}), 400
+        
+    try:
+        parsed_date = datetime.fromisoformat(data['event_date'].replace('Z', '+00:00'))
+        
+        new_event = Event(
+            title=data['title'],
+            description=data.get('description', 'No description provided.'),
+            event_date=parsed_date,
+            organizer_id=current_user_id 
+        )
+        
+        db.session.add(new_event)
+        db.session.commit()
+        return jsonify({'message': 'Event created successfully', 'id': new_event.id}), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
