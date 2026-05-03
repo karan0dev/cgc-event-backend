@@ -276,24 +276,7 @@ def admin_create_event():
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/admin/events/<int:event_id>', methods=['PUT'])
-@jwt_required()
-def admin_update_event(event_id):
-    club = get_club_from_token()
-    if not club:
-        return jsonify({'error': 'Club admin access required'}), 403
-    event = Event.query.get_or_404(event_id)
-    if event.club_id != club.id:
-        return jsonify({'error': 'You can only edit your own events'}), 403
-    data = request.get_json()
-    for field in ['title', 'description', 'category', 'time_str', 'venue', 'team_size', 'status']:
-        if field in data: setattr(event, field, data[field])
-    if 'max_slots' in data: event.max_slots = int(data['max_slots'])
-    if 'price'     in data: event.price     = int(data['price'])
-    if 'event_date' in data:
-        event.event_date = datetime.fromisoformat(data['event_date'].replace('Z', '+00:00'))
-    db.session.commit()
-    return jsonify({'message': 'Event updated!'}), 200
+
 
 @app.route('/api/admin/events/<int:event_id>', methods=['DELETE'])
 @jwt_required()
@@ -628,14 +611,7 @@ def admin_update_event(event_id):
     if 'event_date' in data:
         event.event_date = datetime.fromisoformat(data['event_date'].replace('Z', '+00:00'))
 
-    # Store update alert for registered students
-    if changes:
-        alert_msg = f"'{event.title}' has been updated: " + ', '.join(changes)
-        regs = Registration.query.filter_by(event_id=event_id).all()
-        # Store in a simple way — we add it to a new EventAlert table
-        # For now store in event description as a note won't work
-        # Instead return the changes so the app can save locally
-    
+
     db.session.commit()
     return jsonify({
         'message': 'Event updated!',
