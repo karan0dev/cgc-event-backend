@@ -15,13 +15,13 @@ CORS(app)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'cgcu-catalyst-secret-2026')
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,
+    'pool_recycle': 300,
+}
 
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
-app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_pre_ping': True,       # auto-reconnects if DB was sleeping
-    'pool_recycle': 300,         # recycles connections every 5 min
-}
 
 # ════════════════════════════════════════
 # DATABASE MODELS
@@ -46,6 +46,7 @@ class Club(db.Model):
     color1        = db.Column(db.String(10), default='#E1352F')
     color2        = db.Column(db.String(10), default='#FF7A4C')
     followers     = db.Column(db.Integer, default=0)
+    is_active     = db.Column(db.Boolean, default=True)
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
     events        = db.relationship('Event', backref='club', lazy=True)
 
@@ -61,6 +62,7 @@ class Event(db.Model):
     price         = db.Column(db.Integer, default=0)
     team_size     = db.Column(db.String(50), default='Individual')
     status        = db.Column(db.String(20), default='upcoming')
+    is_featured   = db.Column(db.Boolean, default=False)
     club_id       = db.Column(db.Integer, db.ForeignKey('club.id'), nullable=True)
     organizer_id  = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
@@ -84,6 +86,7 @@ def club_to_dict(c):
         'id': c.id, 'name': c.name, 'description': c.description,
         'email': c.email, 'color1': c.color1, 'color2': c.color2,
         'followers': c.followers, 'eventsCount': len(c.events),
+        'is_active': c.is_active,
         'created_at': c.created_at.isoformat()
     }
 
@@ -95,10 +98,18 @@ def event_to_dict(e):
         'time_str': e.time_str, 'venue': e.venue,
         'max_slots': e.max_slots, 'registered_count': len(e.registrations),
         'price': e.price, 'team_size': e.team_size, 'status': e.status,
+        'is_featured': e.is_featured,
         'club_id': e.club_id, 'club_name': club_name,
         'color1': e.club.color1 if e.club else '#E1352F',
         'color2': e.club.color2 if e.club else '#FF7A4C',
     }
+
+# Super admin credentials from env vars
+SUPER_ADMIN_EMAIL    = os.getenv('SUPER_ADMIN_EMAIL',    'admin@cgcuniversity.in')
+SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD', 'cgcu@superadmin2026')
+
+def is_super_admin():
+    return get_jwt_identity() == 'superadmin'
 
 
 # ════════════════════════════════════════
@@ -177,12 +188,12 @@ def login_club():
 
 
 # ════════════════════════════════════════
-# PUBLIC CLUB ROUTES
+# PUBLIC CLUB & EVENT ROUTES
 # ════════════════════════════════════════
 
 @app.route('/api/clubs', methods=['GET'])
 def get_clubs():
-    clubs = Club.query.all()
+    clubs = Club.query.filter_by(is_active=True).all()
     return jsonify([club_to_dict(c) for c in clubs]), 200
 
 @app.route('/api/clubs/<int:club_id>', methods=['GET'])
@@ -192,18 +203,16 @@ def get_club(club_id):
     data['events'] = [event_to_dict(e) for e in club.events if e.status != 'completed']
     return jsonify(data), 200
 
-
-# ════════════════════════════════════════
-# PUBLIC EVENT ROUTES
-# ════════════════════════════════════════
-
 @app.route('/api/events', methods=['GET'])
 def get_events():
     category = request.args.get('category')
     status   = request.args.get('status', 'upcoming')
+    featured = request.args.get('featured')
     query    = Event.query.filter_by(status=status)
     if category:
         query = query.filter_by(category=category)
+    if featured:
+        query = query.filter_by(is_featured=True)
     events = query.order_by(Event.event_date).all()
     return jsonify([event_to_dict(e) for e in events]), 200
 
@@ -254,17 +263,11 @@ def admin_create_event():
     try:
         parsed_date = datetime.fromisoformat(data['event_date'].replace('Z', '+00:00'))
         event = Event(
-            title=data['title'],
-            description=data.get('description', ''),
-            category=data.get('category', 'Workshop'),
-            event_date=parsed_date,
-            time_str=data.get('time_str', ''),
-            venue=data.get('venue', 'CGCU Mohali'),
-            max_slots=int(data.get('max_slots', 100)),
-            price=int(data.get('price', 0)),
-            team_size=data.get('team_size', 'Individual'),
-            status='upcoming',
-            club_id=club.id,
+            title=data['title'], description=data.get('description', ''),
+            category=data.get('category', 'Workshop'), event_date=parsed_date,
+            time_str=data.get('time_str', ''), venue=data.get('venue', 'CGCU Mohali'),
+            max_slots=int(data.get('max_slots', 100)), price=int(data.get('price', 0)),
+            team_size=data.get('team_size', 'Individual'), status='upcoming', club_id=club.id,
         )
         db.session.add(event)
         db.session.commit()
@@ -284,12 +287,9 @@ def admin_update_event(event_id):
         return jsonify({'error': 'You can only edit your own events'}), 403
     data = request.get_json()
     for field in ['title', 'description', 'category', 'time_str', 'venue', 'team_size', 'status']:
-        if field in data:
-            setattr(event, field, data[field])
-    if 'max_slots' in data:
-        event.max_slots = int(data['max_slots'])
-    if 'price' in data:
-        event.price = int(data['price'])
+        if field in data: setattr(event, field, data[field])
+    if 'max_slots' in data: event.max_slots = int(data['max_slots'])
+    if 'price'     in data: event.price     = int(data['price'])
     if 'event_date' in data:
         event.event_date = datetime.fromisoformat(data['event_date'].replace('Z', '+00:00'))
     db.session.commit()
@@ -332,16 +332,153 @@ def admin_get_registrations(event_id):
     for r in regs:
         user = User.query.get(r.user_id)
         result.append({
-            'id': r.id,
-            'name':      user.name   if user else 'Unknown',
-            'email':     user.email  if user else '',
-            'branch':    user.branch if user else '',
-            'year':      user.year   if user else '',
-            'team_name': r.team_name,
-            'phone':     r.phone,
-            'registered_at': r.timestamp.isoformat()
+            'id': r.id, 'name': user.name if user else 'Unknown',
+            'email': user.email if user else '', 'branch': user.branch if user else '',
+            'year': user.year if user else '', 'team_name': r.team_name,
+            'phone': r.phone, 'registered_at': r.timestamp.isoformat()
         })
     return jsonify(result), 200
+
+
+# ════════════════════════════════════════
+# SUPER ADMIN ROUTES
+# ════════════════════════════════════════
+
+@app.route('/api/superadmin/login', methods=['POST'])
+def superadmin_login():
+    data = request.get_json()
+    if data.get('email') == SUPER_ADMIN_EMAIL and data.get('password') == SUPER_ADMIN_PASSWORD:
+        token = create_access_token(identity='superadmin')
+        return jsonify({'access_token': token, 'role': 'superadmin'}), 200
+    return jsonify({'error': 'Invalid super admin credentials'}), 401
+
+@app.route('/api/superadmin/stats', methods=['GET'])
+@jwt_required()
+def superadmin_stats():
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    return jsonify({
+        'total_clubs':         Club.query.count(),
+        'active_clubs':        Club.query.filter_by(is_active=True).count(),
+        'total_events':        Event.query.count(),
+        'featured_events':     Event.query.filter_by(is_featured=True).count(),
+        'total_students':      User.query.filter_by(role='Student').count(),
+        'total_registrations': Registration.query.count(),
+    }), 200
+
+@app.route('/api/superadmin/clubs', methods=['GET'])
+@jwt_required()
+def superadmin_get_clubs():
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    clubs = Club.query.order_by(Club.created_at.desc()).all()
+    return jsonify([club_to_dict(c) for c in clubs]), 200
+
+@app.route('/api/superadmin/clubs', methods=['POST'])
+@jwt_required()
+def superadmin_add_club():
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    data = request.get_json()
+    if not all(data.get(k) for k in ['name', 'email', 'password']):
+        return jsonify({'error': 'name, email, password required'}), 400
+    if Club.query.filter_by(email=data['email']).first():
+        return jsonify({'error': 'Club email already exists'}), 400
+    if Club.query.filter_by(name=data['name']).first():
+        return jsonify({'error': 'Club name already taken'}), 400
+    club = Club(
+        name=data['name'], email=data['email'].lower(),
+        password_hash=generate_password_hash(data['password']),
+        description=data.get('description', ''),
+        color1=data.get('color1', '#E1352F'),
+        color2=data.get('color2', '#FF7A4C'),
+        is_active=True,
+    )
+    db.session.add(club)
+    db.session.commit()
+    return jsonify({'message': f"Club '{club.name}' created!", 'id': club.id}), 201
+
+@app.route('/api/superadmin/clubs/<int:club_id>', methods=['PUT'])
+@jwt_required()
+def superadmin_edit_club(club_id):
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    club = Club.query.get_or_404(club_id)
+    data = request.get_json()
+    for field in ['name', 'description', 'color1', 'color2']:
+        if field in data: setattr(club, field, data[field])
+    if 'password' in data and data['password']:
+        club.password_hash = generate_password_hash(data['password'])
+    if 'is_active' in data:
+        club.is_active = bool(data['is_active'])
+    db.session.commit()
+    return jsonify({'message': 'Club updated!'}), 200
+
+@app.route('/api/superadmin/clubs/<int:club_id>', methods=['DELETE'])
+@jwt_required()
+def superadmin_delete_club(club_id):
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    club = Club.query.get_or_404(club_id)
+    for event in club.events:
+        Registration.query.filter_by(event_id=event.id).delete()
+    Event.query.filter_by(club_id=club_id).delete()
+    db.session.delete(club)
+    db.session.commit()
+    return jsonify({'message': f"Club '{club.name}' deleted!"}), 200
+
+@app.route('/api/superadmin/events', methods=['GET'])
+@jwt_required()
+def superadmin_get_events():
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    events = Event.query.order_by(Event.created_at.desc()).all()
+    return jsonify([event_to_dict(e) for e in events]), 200
+
+@app.route('/api/superadmin/feature/<int:event_id>', methods=['POST'])
+@jwt_required()
+def superadmin_feature_event(event_id):
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    event = Event.query.get_or_404(event_id)
+    event.is_featured = not event.is_featured
+    db.session.commit()
+    status = 'featured' if event.is_featured else 'unfeatured'
+    return jsonify({'message': f"Event {status}!", 'is_featured': event.is_featured}), 200
+
+@app.route('/api/superadmin/events/<int:event_id>', methods=['DELETE'])
+@jwt_required()
+def superadmin_delete_event(event_id):
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    event = Event.query.get_or_404(event_id)
+    Registration.query.filter_by(event_id=event_id).delete()
+    db.session.delete(event)
+    db.session.commit()
+    return jsonify({'message': 'Event deleted!'}), 200
+
+@app.route('/api/superadmin/students', methods=['GET'])
+@jwt_required()
+def superadmin_get_students():
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    students = User.query.filter_by(role='Student').order_by(User.id.desc()).all()
+    return jsonify([{
+        'id': s.id, 'name': s.name, 'email': s.email,
+        'branch': s.branch, 'year': s.year,
+        'registrations': len(s.registrations),
+    } for s in students]), 200
+
+@app.route('/api/superadmin/students/<int:user_id>', methods=['DELETE'])
+@jwt_required()
+def superadmin_delete_student(user_id):
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    user = User.query.get_or_404(user_id)
+    Registration.query.filter_by(user_id=user_id).delete()
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({'message': 'Student deleted!'}), 200
 
 
 # ════════════════════════════════════════
@@ -365,8 +502,7 @@ def seed_clubs():
             club = Club(
                 name=c['name'], email=c['email'],
                 password_hash=generate_password_hash(c['password']),
-                description=c['description'],
-                color1=c['color1'], color2=c['color2'],
+                description=c['description'], color1=c['color1'], color2=c['color2'],
             )
             db.session.add(club)
             added += 1
@@ -385,10 +521,6 @@ def setup():
 
 @app.route('/api/migrate', methods=['POST'])
 def migrate():
-    """
-    Adds missing columns to existing tables.
-    Safe to run multiple times — IF NOT EXISTS prevents errors.
-    """
     from sqlalchemy import text
     sql = """
     ALTER TABLE "user" ADD COLUMN IF NOT EXISTS branch VARCHAR(100);
@@ -402,6 +534,11 @@ def migrate():
     ALTER TABLE event ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'upcoming';
     ALTER TABLE event ADD COLUMN IF NOT EXISTS club_id INTEGER;
     ALTER TABLE event ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+    ALTER TABLE event ADD COLUMN IF NOT EXISTS is_featured BOOLEAN DEFAULT FALSE;
+    ALTER TABLE event ALTER COLUMN organizer_id DROP NOT NULL;
+    ALTER TABLE registration ADD COLUMN IF NOT EXISTS team_name VARCHAR(100);
+    ALTER TABLE registration ADD COLUMN IF NOT EXISTS phone VARCHAR(20);
+    ALTER TABLE club ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
     """
     try:
         with db.engine.begin() as conn:
@@ -409,15 +546,13 @@ def migrate():
         return jsonify({'message': 'Migration complete!'}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
 @app.route('/api/migrate2', methods=['POST'])
 def migrate2():
     from sqlalchemy import text
-    sql = """
-    ALTER TABLE event ALTER COLUMN organizer_id DROP NOT NULL;
-    """
     try:
         with db.engine.begin() as conn:
-            conn.execute(text(sql))
+            conn.execute(text("ALTER TABLE event ALTER COLUMN organizer_id DROP NOT NULL;"))
         return jsonify({'message': 'migrate2 complete!'}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -435,7 +570,7 @@ def migrate3():
             conn.execute(text(sql))
         return jsonify({'message': 'migrate3 complete!'}), 200
     except Exception as e:
-        return jsonify({'error': str(e)}), 500        
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':
