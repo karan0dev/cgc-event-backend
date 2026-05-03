@@ -571,7 +571,32 @@ def migrate3():
         return jsonify({'message': 'migrate3 complete!'}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
+@app.route('/api/student/registrations', methods=['GET'])
+@jwt_required()
+def student_registrations():
+    identity = get_jwt_identity()
+    if not identity.startswith('student:'):
+        return jsonify({'error': 'Student access required'}), 403
+    user_id = int(identity.split(':')[1])
+    user = User.query.get_or_404(user_id)
+    regs = Registration.query.filter_by(user_id=user_id).order_by(Registration.timestamp.desc()).all()
+    result = []
+    for r in regs:
+        event = Event.query.get(r.event_id)
+        if not event: continue
+        result.append({
+            'registration_id': r.id,
+            'registered_at': r.timestamp.isoformat(),
+            'event': event_to_dict(event),
+        })
+    return jsonify({
+        'name':   user.name,
+        'email':  user.email,
+        'branch': user.branch or '',
+        'year':   user.year or '',
+        'total_registrations': len(result),
+        'registrations': result,
+    }), 200
 
 if __name__ == '__main__':
     with app.app_context():
