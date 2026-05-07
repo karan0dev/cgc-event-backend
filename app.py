@@ -664,6 +664,25 @@ def forgot_password():
         'temp_password': temp_pass,
         'note': 'Use this to login, then change your password.'
     }), 200    
+@app.route('/api/student/profile', methods=['PUT'])
+@jwt_required()
+def update_student_profile():
+    identity = get_jwt_identity()
+    if not identity.startswith('student:'):
+        return jsonify({'error': 'Student access required'}), 403
+    user_id = int(identity.split(':')[1])
+    user    = User.query.get_or_404(user_id)
+    data    = request.get_json()
+    if 'name'   in data and data['name']:   user.name   = data['name'].strip()
+    if 'branch' in data:                    user.branch = data['branch'].strip()
+    if 'year'   in data:                    user.year   = data['year'].strip()
+    db.session.commit()
+    return jsonify({
+        'message': 'Profile updated!',
+        'name':    user.name,
+        'branch':  user.branch,
+        'year':    user.year,
+    }), 200
 
 if __name__ == '__main__':
     with app.app_context():
