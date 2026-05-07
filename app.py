@@ -3,6 +3,8 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
+import secrets
+import string
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
@@ -28,14 +30,17 @@ jwt = JWTManager(app)
 # ════════════════════════════════════════
 
 class User(db.Model):
-    id             = db.Column(db.Integer, primary_key=True)
-    name           = db.Column(db.String(100), nullable=False)
-    email          = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash  = db.Column(db.String(256), nullable=True)
-    branch         = db.Column(db.String(100), nullable=True)
-    year           = db.Column(db.String(20), nullable=True)
-    role           = db.Column(db.String(20), default='Student')
-    registrations  = db.relationship('Registration', backref='student', lazy=True)
+    __tablename__ = 'users'
+    id            = db.Column(db.Integer, primary_key=True)
+    name          = db.Column(db.String(100), nullable=False)
+    email         = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(256), nullable=False)
+    branch        = db.Column(db.String(100))
+    year          = db.Column(db.String(50))
+    roll_no       = db.Column(db.String(50))   # ← ADD THIS LINE
+    role          = db.Column(db.String(20), default='student')
+    registrations = db.relationship('Registration', backref='student', lazy=True)
+
 
 class Club(db.Model):
     id            = db.Column(db.Integer, primary_key=True)
@@ -129,6 +134,7 @@ def register_student():
         password_hash=generate_password_hash(data['password']),
         branch=data.get('branch', ''),
         year=data.get('year', ''),
+        roll_no=data.get('roll_no', '').strip(),
         role='Student'
     )
     db.session.add(user)
@@ -138,12 +144,32 @@ def register_student():
 
 @app.route('/api/login', methods=['POST'])
 def login_student():
-    data = request.get_json()
-    user = User.query.filter_by(email=data.get('email')).first()
-    if not user or not user.password_hash or not check_password_hash(user.password_hash, data.get('password', '')):
-        return jsonify({'error': 'Invalid email or password'}), 401
+    data     = request.get_json()
+    login_id = data.get('email', '').strip()
+    password = data.get('password', '')
+
+    if not login_id or not password:
+        return jsonify({'error': 'Email/Roll No and password are required'}), 400
+
+    # Try email first, then roll_no
+    if '@' in login_id:
+        user = User.query.filter_by(email=login_id.lower()).first()
+    else:
+        user = User.query.filter_by(roll_no=login_id).first()
+
+    if not user or not check_password_hash(user.password_hash, password):
+        return jsonify({'error': 'Invalid credentials'}), 401
+
     token = create_access_token(identity=f'student:{user.id}')
-    return jsonify({'access_token': token, 'role': user.role, 'name': user.name}), 200
+    return jsonify({
+        'access_token': token,
+        'role':         'student',
+        'name':         user.name,
+        'email':        user.email,
+        'branch':       user.branch or '',
+        'year':         user.year   or '',
+        'roll_no':      user.roll_no or '',
+    }), 200
 
 
 # ════════════════════════════════════════
@@ -644,8 +670,6 @@ def student_event_updates():
             })
     return jsonify(result), 200
 
-import secrets, string
-
 @app.route('/api/forgot-password', methods=['POST'])
 def forgot_password():
     data  = request.get_json()
@@ -683,6 +707,20 @@ def update_student_profile():
         'branch':  user.branch,
         'year':    user.year,
     }), 200
+
+
+@app.route('/api/migrate-rollno', methods=['POST'])
+def migrate_rollno():
+    from sqlalchemy import text
+    sql = """
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS roll_no VARCHAR(50);
+    """
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(text(sql))
+        return jsonify({'message': 'roll_no column added successfully!'}), 200
+    except Exception as e:
+        return jsonify({'message': str(e)}), 200
 
 if __name__ == '__main__':
     with app.app_context():
