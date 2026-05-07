@@ -3,8 +3,6 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
-import secrets
-import string
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
@@ -39,7 +37,6 @@ class User(db.Model):
     year          = db.Column(db.String(50))
     roll_no       = db.Column(db.String(50))   # ← ADD THIS LINE
     role          = db.Column(db.String(20), default='student')
-    
 
 
 class Club(db.Model):
@@ -134,7 +131,6 @@ def register_student():
         password_hash=generate_password_hash(data['password']),
         branch=data.get('branch', ''),
         year=data.get('year', ''),
-        roll_no=data.get('roll_no', '').strip(),
         role='Student'
     )
     db.session.add(user)
@@ -670,6 +666,8 @@ def student_event_updates():
             })
     return jsonify(result), 200
 
+import secrets, string
+
 @app.route('/api/forgot-password', methods=['POST'])
 def forgot_password():
     data  = request.get_json()
@@ -707,20 +705,6 @@ def update_student_profile():
         'branch':  user.branch,
         'year':    user.year,
     }), 200
-
-
-@app.route('/api/migrate-rollno', methods=['POST'])
-def migrate_rollno():
-    from sqlalchemy import text
-    sql = """
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS roll_no VARCHAR(50);
-    """
-    try:
-        with db.engine.begin() as conn:
-            conn.execute(text(sql))
-        return jsonify({'message': 'roll_no column added successfully!'}), 200
-    except Exception as e:
-        return jsonify({'message': str(e)}), 200
 
 if __name__ == '__main__':
     with app.app_context():
