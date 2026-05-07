@@ -151,7 +151,15 @@ def login_student():
     if '@' in login_id:
         user = User.query.filter_by(email=login_id.lower()).first()
     else:
-        user = User.query.filter_by(roll_no=login_id).first()
+        # Try exact match first, then stripped match
+        user = User.query.filter_by(roll_no=login_id.strip()).first()
+        if not user:
+            # Try case-insensitive and whitespace-stripped search
+            all_users = User.query.filter(User.roll_no.isnot(None)).all()
+            for u in all_users:
+                if u.roll_no and u.roll_no.strip() == login_id.strip():
+                    user = u
+                    break
 
     if not user or not check_password_hash(user.password_hash, password):
         return jsonify({'error': 'Invalid credentials'}), 401
@@ -471,7 +479,7 @@ def superadmin_get_students():
     return jsonify([{
         'id': s.id, 'name': s.name, 'email': s.email,
         'branch': s.branch, 'year': s.year,
-        'registrations': Registration.query.filter_by(user_id=s.id).count(),
+        'registrations': len(s.registrations),
     } for s in students]), 200
 
 @app.route('/api/superadmin/students/<int:user_id>', methods=['DELETE'])
@@ -706,6 +714,23 @@ def update_student_profile():
         'branch':  user.branch,
         'year':    user.year,
     }), 200
+
+@app.route('/api/debug/user/<email>', methods=['GET'])
+def debug_user(email):
+    """Temporary debug route - check stored user data"""
+    user = User.query.filter_by(email=email.lower()).first()
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    return jsonify({
+        'id':      user.id,
+        'name':    user.name,
+        'email':   user.email,
+        'branch':  user.branch,
+        'year':    user.year,
+        'roll_no': user.roll_no,
+        'role':    user.role,
+    }), 200
+
 
 if __name__ == '__main__':
     with app.app_context():
