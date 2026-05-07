@@ -644,6 +644,27 @@ def student_event_updates():
             })
     return jsonify(result), 200
 
+import secrets, string
+
+@app.route('/api/forgot-password', methods=['POST'])
+def forgot_password():
+    data  = request.get_json()
+    email = data.get('email', '').strip().lower()
+    if not email:
+        return jsonify({'error': 'Email is required'}), 400
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({'error': 'No account found with this email'}), 404
+    # Generate new temp password
+    temp_pass = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
+    user.password_hash = generate_password_hash(temp_pass)
+    db.session.commit()
+    return jsonify({
+        'message': 'Password reset successful!',
+        'temp_password': temp_pass,
+        'note': 'Use this to login, then change your password.'
+    }), 200    
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
