@@ -39,7 +39,7 @@ class User(db.Model):
     year          = db.Column(db.String(50))
     roll_no       = db.Column(db.String(50))   # ← ADD THIS LINE
     role          = db.Column(db.String(20), default='student')
-    registrations = db.relationship('Registration', foreign_keys='Registration.user_id', lazy=True)
+    
 
 
 class Club(db.Model):
@@ -475,7 +475,7 @@ def superadmin_get_students():
     return jsonify([{
         'id': s.id, 'name': s.name, 'email': s.email,
         'branch': s.branch, 'year': s.year,
-        'registrations': len(s.registrations),
+        'registrations': Registration.query.filter_by(user_id=s.id).count(),
     } for s in students]), 200
 
 @app.route('/api/superadmin/students/<int:user_id>', methods=['DELETE'])
