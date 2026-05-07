@@ -39,7 +39,7 @@ class User(db.Model):
     year          = db.Column(db.String(50))
     roll_no       = db.Column(db.String(50))   # ← ADD THIS LINE
     role          = db.Column(db.String(20), default='student')
-    registrations = db.relationship('Registration', backref='student', lazy=True)
+    registrations = db.relationship('Registration', foreign_keys='Registration.user_id', lazy=True)
 
 
 class Club(db.Model):
