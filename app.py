@@ -544,6 +544,7 @@ def migrate():
     ALTER TABLE registration ADD COLUMN IF NOT EXISTS team_name VARCHAR(100);
     ALTER TABLE registration ADD COLUMN IF NOT EXISTS phone VARCHAR(20);
     ALTER TABLE club ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS roll_no VARCHAR(50);
     """
     try:
         with db.engine.begin() as conn:
