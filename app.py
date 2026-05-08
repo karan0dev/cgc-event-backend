@@ -474,7 +474,8 @@ def superadmin_get_students():
     return jsonify([{
         'id': s.id, 'name': s.name, 'email': s.email,
         'branch': s.branch, 'year': s.year,
-        'registrations': len(s.registrations),
+        'registrations': Registration.query.filter_by(user_id=s.id).count(),
+        'roll_no': s.roll_no or '',
     } for s in students]), 200
 
 @app.route('/api/superadmin/students/<int:user_id>', methods=['DELETE'])
