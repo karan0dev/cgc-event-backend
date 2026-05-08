@@ -474,8 +474,7 @@ def superadmin_get_students():
     return jsonify([{
         'id': s.id, 'name': s.name, 'email': s.email,
         'branch': s.branch, 'year': s.year,
-        'registrations': Registration.query.filter_by(user_id=s.id).count(),
-        'roll_no': s.roll_no or '',
+        'registrations': len(s.registrations),
     } for s in students]), 200
 
 @app.route('/api/superadmin/students/<int:user_id>', methods=['DELETE'])
@@ -710,6 +709,26 @@ def update_student_profile():
         'branch':  user.branch,
         'year':    user.year,
     }), 200
+
+
+@app.route('/api/migrate4', methods=['POST'])
+def migrate4():
+    from sqlalchemy import text
+    sql = """
+    ALTER TABLE registration DROP CONSTRAINT IF EXISTS registration_user_id_fkey;
+    ALTER TABLE registration ADD CONSTRAINT registration_user_id_fkey
+        FOREIGN KEY (user_id) REFERENCES users(id);
+
+    ALTER TABLE event DROP CONSTRAINT IF EXISTS event_organizer_id_fkey;
+    ALTER TABLE event ADD CONSTRAINT event_organizer_id_fkey
+        FOREIGN KEY (organizer_id) REFERENCES users(id);
+    """
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(text(sql))
+        return jsonify({'message': 'migrate4 complete! FK constraints fixed.'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     with app.app_context():
