@@ -3,8 +3,6 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
-import secrets
-import string
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
@@ -37,7 +35,7 @@ class User(db.Model):
     password_hash = db.Column(db.String(256), nullable=False)
     branch        = db.Column(db.String(100))
     year          = db.Column(db.String(50))
-    roll_no       = db.Column(db.String(50))
+    roll_no       = db.Column(db.String(50))   # ← ADD THIS LINE
     role          = db.Column(db.String(20), default='student')
 
 
@@ -108,6 +106,7 @@ def event_to_dict(e):
         'color2': e.club.color2 if e.club else '#FF7A4C',
     }
 
+# Super admin credentials from env vars
 SUPER_ADMIN_EMAIL    = os.getenv('SUPER_ADMIN_EMAIL',    'admin@cgcuniversity.in')
 SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD', 'cgcu@superadmin2026')
 
@@ -124,30 +123,20 @@ def register_student():
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password'):
         return jsonify({'error': 'Email and password required'}), 400
-    if User.query.filter_by(email=data['email'].lower().strip()).first():
+    if User.query.filter_by(email=data['email']).first():
         return jsonify({'error': 'Email already registered'}), 400
-    # ✅ FIX: safely get roll_no (handles None/missing)
-    roll_no_val = data.get('roll_no')
-    roll_no_val = str(roll_no_val).strip() if roll_no_val else None
     user = User(
-        name          = data.get('name', '').strip(),
-        email         = data['email'].lower().strip(),
-        password_hash = generate_password_hash(data['password']),
-        branch        = data.get('branch', '').strip(),
-        year          = data.get('year', '').strip(),
-        roll_no       = roll_no_val,   # ✅ properly saved
-        role          = 'Student'
+        name=data.get('name', ''),
+        email=data['email'],
+        password_hash=generate_password_hash(data['password']),
+        branch=data.get('branch', ''),
+        year=data.get('year', ''),
+        role='Student'
     )
     db.session.add(user)
     db.session.commit()
     token = create_access_token(identity=f'student:{user.id}')
-    return jsonify({
-        'access_token': token,
-        'role':    'Student',
-        'name':    user.name,
-        'email':   user.email,
-        'roll_no': user.roll_no or '',
-    }), 201
+    return jsonify({'access_token': token, 'role': 'Student', 'name': user.name}), 201
 
 @app.route('/api/login', methods=['POST'])
 def login_student():
@@ -162,14 +151,7 @@ def login_student():
     if '@' in login_id:
         user = User.query.filter_by(email=login_id.lower()).first()
     else:
-        # ✅ FIX: try exact match first, then strip-match
         user = User.query.filter_by(roll_no=login_id).first()
-        if not user:
-            all_u = User.query.filter(User.roll_no.isnot(None)).all()
-            for u in all_u:
-                if u.roll_no and u.roll_no.strip() == login_id.strip():
-                    user = u
-                    break
 
     if not user or not check_password_hash(user.password_hash, password):
         return jsonify({'error': 'Invalid credentials'}), 401
@@ -177,12 +159,12 @@ def login_student():
     token = create_access_token(identity=f'student:{user.id}')
     return jsonify({
         'access_token': token,
-        'role':    'student',
-        'name':    user.name,
-        'email':   user.email,
-        'branch':  user.branch  or '',
-        'year':    user.year    or '',
-        'roll_no': user.roll_no or '',
+        'role':         'student',
+        'name':         user.name,
+        'email':        user.email,
+        'branch':       user.branch or '',
+        'year':         user.year   or '',
+        'roll_no':      user.roll_no or '',
     }), 200
 
 
@@ -249,8 +231,10 @@ def get_events():
     status   = request.args.get('status', 'upcoming')
     featured = request.args.get('featured')
     query    = Event.query.filter_by(status=status)
-    if category: query = query.filter_by(category=category)
-    if featured: query = query.filter_by(is_featured=True)
+    if category:
+        query = query.filter_by(category=category)
+    if featured:
+        query = query.filter_by(is_featured=True)
     events = query.order_by(Event.event_date).all()
     return jsonify([event_to_dict(e) for e in events]), 200
 
@@ -266,14 +250,14 @@ def register_for_event(event_id):
     if not identity.startswith('student:'):
         return jsonify({'error': 'Only students can register'}), 403
     user_id = int(identity.split(':')[1])
-    event   = Event.query.get_or_404(event_id)
+    event = Event.query.get_or_404(event_id)
     if len(event.registrations) >= event.max_slots:
         return jsonify({'error': 'Event is fully booked'}), 400
     if Registration.query.filter_by(user_id=user_id, event_id=event_id).first():
         return jsonify({'error': 'Already registered'}), 400
     data = request.get_json() or {}
-    reg  = Registration(user_id=user_id, event_id=event_id,
-                        team_name=data.get('team_name'), phone=data.get('phone'))
+    reg = Registration(user_id=user_id, event_id=event_id,
+                       team_name=data.get('team_name'), phone=data.get('phone'))
     db.session.add(reg)
     db.session.commit()
     return jsonify({'message': 'Registered successfully!'}), 201
@@ -314,33 +298,7 @@ def admin_create_event():
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/admin/events/<int:event_id>', methods=['PUT'])
-@jwt_required()
-def admin_update_event(event_id):
-    club = get_club_from_token()
-    if not club:
-        return jsonify({'error': 'Club admin access required'}), 403
-    event = Event.query.get_or_404(event_id)
-    if event.club_id != club.id:
-        return jsonify({'error': 'You can only edit your own events'}), 403
-    data    = request.get_json()
-    changes = []
-    if 'time_str'   in data and data['time_str']  != event.time_str:
-        changes.append(f"Time changed to {data['time_str']}")
-    if 'venue'      in data and data['venue']     != event.venue:
-        changes.append(f"Venue changed to {data['venue']}")
-    if 'event_date' in data:
-        new_date = datetime.fromisoformat(data['event_date'].replace('Z', '+00:00'))
-        if new_date.date() != event.event_date.date():
-            changes.append(f"Date changed to {new_date.strftime('%b %d, %Y')}")
-    for field in ['title', 'description', 'category', 'time_str', 'venue', 'team_size', 'status']:
-        if field in data: setattr(event, field, data[field])
-    if 'max_slots'  in data: event.max_slots  = int(data['max_slots'])
-    if 'price'      in data: event.price      = int(data['price'])
-    if 'event_date' in data:
-        event.event_date = datetime.fromisoformat(data['event_date'].replace('Z', '+00:00'))
-    db.session.commit()
-    return jsonify({'message': 'Event updated!', 'changes': changes, 'event': event_to_dict(event)}), 200
+
 
 @app.route('/api/admin/events/<int:event_id>', methods=['DELETE'])
 @jwt_required()
@@ -351,7 +309,8 @@ def admin_delete_event(event_id):
     event = Event.query.get_or_404(event_id)
     if event.club_id != club.id:
         return jsonify({'error': 'You can only delete your own events'}), 403
-    Registration.query.filter_by(event_id=event_id).delete()
+    Registration.query.filter_by(event_id=event_id).delete(synchronize_session=False)
+    db.session.expire_all()
     db.session.delete(event)
     db.session.commit()
     return jsonify({'message': 'Event deleted'}), 200
@@ -374,19 +333,15 @@ def admin_get_registrations(event_id):
     event = Event.query.get_or_404(event_id)
     if event.club_id != club.id:
         return jsonify({'error': 'Access denied'}), 403
-    regs   = Registration.query.filter_by(event_id=event_id).all()
+    regs = Registration.query.filter_by(event_id=event_id).all()
     result = []
     for r in regs:
         user = User.query.get(r.user_id)
         result.append({
             'id': r.id, 'name': user.name if user else 'Unknown',
-            'email': user.email if user else '',
-            'branch': user.branch if user else '',
-            'year': user.year if user else '',
-            'roll_no': user.roll_no if user else '',
-            'team_name': r.team_name,
-            'phone': r.phone,
-            'registered_at': r.timestamp.isoformat()
+            'email': user.email if user else '', 'branch': user.branch if user else '',
+            'year': user.year if user else '', 'team_name': r.team_name,
+            'phone': r.phone, 'registered_at': r.timestamp.isoformat()
         })
     return jsonify(result), 200
 
@@ -472,8 +427,9 @@ def superadmin_delete_club(club_id):
         return jsonify({'error': 'Super admin access required'}), 403
     club = Club.query.get_or_404(club_id)
     for event in club.events:
-        Registration.query.filter_by(event_id=event.id).delete()
-    Event.query.filter_by(club_id=club_id).delete()
+        Registration.query.filter_by(event_id=event.id).delete(synchronize_session=False)
+    db.session.expire_all()
+    Event.query.filter_by(club_id=club_id).delete(synchronize_session=False)
     db.session.delete(club)
     db.session.commit()
     return jsonify({'message': f"Club '{club.name}' deleted!"}), 200
@@ -503,7 +459,8 @@ def superadmin_delete_event(event_id):
     if not is_super_admin():
         return jsonify({'error': 'Super admin access required'}), 403
     event = Event.query.get_or_404(event_id)
-    Registration.query.filter_by(event_id=event_id).delete()
+    Registration.query.filter_by(event_id=event_id).delete(synchronize_session=False)
+    db.session.expire_all()
     db.session.delete(event)
     db.session.commit()
     return jsonify({'message': 'Event deleted!'}), 200
@@ -514,15 +471,10 @@ def superadmin_get_students():
     if not is_super_admin():
         return jsonify({'error': 'Super admin access required'}), 403
     students = User.query.filter_by(role='Student').order_by(User.id.desc()).all()
-    # ✅ FIX: uses direct query (no broken relationship) + includes roll_no
     return jsonify([{
-        'id':            s.id,
-        'name':          s.name,
-        'email':         s.email,
-        'branch':        s.branch  or '',
-        'year':          s.year    or '',
-        'roll_no':       s.roll_no or '',
-        'registrations': Registration.query.filter_by(user_id=s.id).count(),
+        'id': s.id, 'name': s.name, 'email': s.email,
+        'branch': s.branch, 'year': s.year,
+        'registrations': len(s.registrations),
     } for s in students]), 200
 
 @app.route('/api/superadmin/students/<int:user_id>', methods=['DELETE'])
@@ -531,16 +483,103 @@ def superadmin_delete_student(user_id):
     if not is_super_admin():
         return jsonify({'error': 'Super admin access required'}), 403
     user = User.query.get_or_404(user_id)
-    Registration.query.filter_by(user_id=user_id).delete()
+    Registration.query.filter_by(user_id=user_id).delete(synchronize_session=False)
+    db.session.expire_all()
     db.session.delete(user)
     db.session.commit()
     return jsonify({'message': 'Student deleted!'}), 200
 
 
 # ════════════════════════════════════════
-# STUDENT ROUTES
+# SETUP + MIGRATE
 # ════════════════════════════════════════
 
+def seed_clubs():
+    clubs_data = [
+        {'name': 'DevSoc',    'email': 'devsoc@cgcuniversity.in',   'password': 'devsoc123',   'description': 'Developer Society of CGCU',             'color1': '#E1352F', 'color2': '#FF7A4C'},
+        {'name': 'IEEE Club', 'email': 'ieee@cgcuniversity.in',      'password': 'ieee123',     'description': 'Institute of Electrical & Electronics', 'color1': '#1e3a8a', 'color2': '#3b82f6'},
+        {'name': 'E-Cell',    'email': 'ecell@cgcuniversity.in',     'password': 'ecell123',    'description': 'Entrepreneurship Cell CGCU',            'color1': '#064e3b', 'color2': '#10b981'},
+        {'name': 'AI Club',   'email': 'aiclub@cgcuniversity.in',    'password': 'aiclub123',   'description': 'Artificial Intelligence & ML Club',     'color1': '#1e1b4b', 'color2': '#6d28d9'},
+        {'name': 'GDSC',      'email': 'gdsc@cgcuniversity.in',      'password': 'gdsc123',     'description': 'Google Developer Student Club',         'color1': '#1e3a8a', 'color2': '#4285F4'},
+        {'name': 'Code Club', 'email': 'codeclub@cgcuniversity.in',  'password': 'code123',     'description': 'Competitive Programming Club',          'color1': '#581c87', 'color2': '#c026d3'},
+        {'name': 'Robotics',  'email': 'robotics@cgcuniversity.in',  'password': 'robotics123', 'description': 'Robotics & IoT Club',                   'color1': '#064e3b', 'color2': '#0d9488'},
+        {'name': 'CyberSec',  'email': 'cybersec@cgcuniversity.in',  'password': 'cybersec123', 'description': 'Cyber Security Club',                   'color1': '#1a0a0a', 'color2': '#dc2626'},
+    ]
+    added = 0
+    for c in clubs_data:
+        if not Club.query.filter_by(email=c['email']).first():
+            club = Club(
+                name=c['name'], email=c['email'],
+                password_hash=generate_password_hash(c['password']),
+                description=c['description'], color1=c['color1'], color2=c['color2'],
+            )
+            db.session.add(club)
+            added += 1
+    if added:
+        db.session.commit()
+        print(f'✅ Seeded {added} clubs into database')
+    else:
+        print('ℹ️  All clubs already exist')
+
+@app.route('/api/setup', methods=['POST'])
+def setup():
+    with app.app_context():
+        db.create_all()
+        seed_clubs()
+    return jsonify({'message': 'Database ready and clubs seeded!'}), 200
+
+@app.route('/api/migrate', methods=['POST'])
+def migrate():
+    from sqlalchemy import text
+    sql = """
+    ALTER TABLE "user" ADD COLUMN IF NOT EXISTS branch VARCHAR(100);
+    ALTER TABLE "user" ADD COLUMN IF NOT EXISTS year VARCHAR(20);
+    ALTER TABLE event ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'Workshop';
+    ALTER TABLE event ADD COLUMN IF NOT EXISTS time_str VARCHAR(50);
+    ALTER TABLE event ADD COLUMN IF NOT EXISTS venue VARCHAR(200) DEFAULT 'CGCU Mohali';
+    ALTER TABLE event ADD COLUMN IF NOT EXISTS max_slots INTEGER DEFAULT 100;
+    ALTER TABLE event ADD COLUMN IF NOT EXISTS price INTEGER DEFAULT 0;
+    ALTER TABLE event ADD COLUMN IF NOT EXISTS team_size VARCHAR(50) DEFAULT 'Individual';
+    ALTER TABLE event ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'upcoming';
+    ALTER TABLE event ADD COLUMN IF NOT EXISTS club_id INTEGER;
+    ALTER TABLE event ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+    ALTER TABLE event ADD COLUMN IF NOT EXISTS is_featured BOOLEAN DEFAULT FALSE;
+    ALTER TABLE event ALTER COLUMN organizer_id DROP NOT NULL;
+    ALTER TABLE registration ADD COLUMN IF NOT EXISTS team_name VARCHAR(100);
+    ALTER TABLE registration ADD COLUMN IF NOT EXISTS phone VARCHAR(20);
+    ALTER TABLE club ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+    """
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(text(sql))
+        return jsonify({'message': 'Migration complete!'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/migrate2', methods=['POST'])
+def migrate2():
+    from sqlalchemy import text
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(text("ALTER TABLE event ALTER COLUMN organizer_id DROP NOT NULL;"))
+        return jsonify({'message': 'migrate2 complete!'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/migrate3', methods=['POST'])
+def migrate3():
+    from sqlalchemy import text
+    sql = """
+    ALTER TABLE registration ADD COLUMN IF NOT EXISTS team_name VARCHAR(100);
+    ALTER TABLE registration ADD COLUMN IF NOT EXISTS phone VARCHAR(20);
+    ALTER TABLE event ALTER COLUMN organizer_id DROP NOT NULL;
+    """
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(text(sql))
+        return jsonify({'message': 'migrate3 complete!'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 @app.route('/api/student/registrations', methods=['GET'])
 @jwt_required()
 def student_registrations():
@@ -548,36 +587,76 @@ def student_registrations():
     if not identity.startswith('student:'):
         return jsonify({'error': 'Student access required'}), 403
     user_id = int(identity.split(':')[1])
-    user    = User.query.get_or_404(user_id)
-    regs    = Registration.query.filter_by(user_id=user_id).order_by(Registration.timestamp.desc()).all()
-    result  = []
+    user = User.query.get_or_404(user_id)
+    regs = Registration.query.filter_by(user_id=user_id).order_by(Registration.timestamp.desc()).all()
+    result = []
     for r in regs:
         event = Event.query.get(r.event_id)
         if not event: continue
         result.append({
             'registration_id': r.id,
-            'registered_at':   r.timestamp.isoformat(),
-            'event':           event_to_dict(event),
+            'registered_at': r.timestamp.isoformat(),
+            'event': event_to_dict(event),
         })
     return jsonify({
-        'name':                user.name,
-        'email':               user.email,
-        'branch':              user.branch  or '',
-        'year':                user.year    or '',
-        'roll_no':             user.roll_no or '',
+        'name':   user.name,
+        'email':  user.email,
+        'branch': user.branch or '',
+        'year':   user.year or '',
         'total_registrations': len(result),
-        'registrations':       result,
+        'registrations': result,
+    }), 200
+# ── Update event + notify registered students ──
+@app.route('/api/admin/events/<int:event_id>', methods=['PUT'])
+@jwt_required()
+def admin_update_event(event_id):
+    club = get_club_from_token()
+    if not club:
+        return jsonify({'error': 'Club admin access required'}), 403
+    event = Event.query.get_or_404(event_id)
+    if event.club_id != club.id:
+        return jsonify({'error': 'You can only edit your own events'}), 403
+    data = request.get_json()
+
+    # Track what changed for the alert message
+    changes = []
+    if 'time_str' in data and data['time_str'] != event.time_str:
+        changes.append(f"Time changed to {data['time_str']}")
+    if 'venue' in data and data['venue'] != event.venue:
+        changes.append(f"Venue changed to {data['venue']}")
+    if 'event_date' in data:
+        new_date = datetime.fromisoformat(data['event_date'].replace('Z', '+00:00'))
+        if new_date.date() != event.event_date.date():
+            changes.append(f"Date changed to {new_date.strftime('%b %d, %Y')}")
+
+    for field in ['title', 'description', 'category', 'time_str', 'venue', 'team_size', 'status']:
+        if field in data:
+            setattr(event, field, data[field])
+    if 'max_slots' in data: event.max_slots = int(data['max_slots'])
+    if 'price'     in data: event.price     = int(data['price'])
+    if 'event_date' in data:
+        event.event_date = datetime.fromisoformat(data['event_date'].replace('Z', '+00:00'))
+
+
+    db.session.commit()
+    return jsonify({
+        'message': 'Event updated!',
+        'changes': changes,
+        'event': event_to_dict(event)
     }), 200
 
+
+# ── Get event updates for student's registrations ──
 @app.route('/api/student/event-updates', methods=['GET'])
 @jwt_required()
 def student_event_updates():
+    """Returns latest details of all events student is registered for."""
     identity = get_jwt_identity()
     if not identity.startswith('student:'):
         return jsonify({'error': 'Student access required'}), 403
     user_id = int(identity.split(':')[1])
-    regs    = Registration.query.filter_by(user_id=user_id).all()
-    result  = []
+    regs = Registration.query.filter_by(user_id=user_id).all()
+    result = []
     for r in regs:
         event = Event.query.get(r.event_id)
         if event:
@@ -591,27 +670,7 @@ def student_event_updates():
             })
     return jsonify(result), 200
 
-@app.route('/api/student/profile', methods=['PUT'])
-@jwt_required()
-def update_student_profile():
-    identity = get_jwt_identity()
-    if not identity.startswith('student:'):
-        return jsonify({'error': 'Student access required'}), 403
-    user_id = int(identity.split(':')[1])
-    user    = User.query.get_or_404(user_id)
-    data    = request.get_json()
-    if 'name'    in data and data['name']:   user.name    = data['name'].strip()
-    if 'branch'  in data:                    user.branch  = data['branch'].strip()
-    if 'year'    in data:                    user.year    = data['year'].strip()
-    if 'roll_no' in data and data['roll_no']: user.roll_no = data['roll_no'].strip()
-    db.session.commit()
-    return jsonify({
-        'message': 'Profile updated!',
-        'name':    user.name,
-        'branch':  user.branch,
-        'year':    user.year,
-        'roll_no': user.roll_no,
-    }), 200
+import secrets, string
 
 @app.route('/api/forgot-password', methods=['POST'])
 def forgot_password():
@@ -622,98 +681,34 @@ def forgot_password():
     user = User.query.filter_by(email=email).first()
     if not user:
         return jsonify({'error': 'No account found with this email'}), 404
-    temp_pass          = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
+    # Generate new temp password
+    temp_pass = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
     user.password_hash = generate_password_hash(temp_pass)
     db.session.commit()
     return jsonify({
-        'message':       'Password reset successful!',
+        'message': 'Password reset successful!',
         'temp_password': temp_pass,
-        'note':          'Use this to login, then change your password.'
-    }), 200
-
-
-# ════════════════════════════════════════
-# DEBUG ROUTES
-# ════════════════════════════════════════
-
-@app.route('/api/debug/user/<email>', methods=['GET'])
-def debug_user(email):
-    user = User.query.filter_by(email=email.lower()).first()
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
+        'note': 'Use this to login, then change your password.'
+    }), 200    
+@app.route('/api/student/profile', methods=['PUT'])
+@jwt_required()
+def update_student_profile():
+    identity = get_jwt_identity()
+    if not identity.startswith('student:'):
+        return jsonify({'error': 'Student access required'}), 403
+    user_id = int(identity.split(':')[1])
+    user    = User.query.get_or_404(user_id)
+    data    = request.get_json()
+    if 'name'   in data and data['name']:   user.name   = data['name'].strip()
+    if 'branch' in data:                    user.branch = data['branch'].strip()
+    if 'year'   in data:                    user.year   = data['year'].strip()
+    db.session.commit()
     return jsonify({
-        'id':      user.id,
+        'message': 'Profile updated!',
         'name':    user.name,
-        'email':   user.email,
         'branch':  user.branch,
         'year':    user.year,
-        'roll_no': user.roll_no,
-        'role':    user.role,
     }), 200
-
-
-# ════════════════════════════════════════
-# SETUP + MIGRATE
-# ════════════════════════════════════════
-
-def seed_clubs():
-    clubs_data = [
-        {'name':'DevSoc',    'email':'devsoc@cgcuniversity.in',   'password':'devsoc123',   'description':'Developer Society of CGCU',             'color1':'#E1352F','color2':'#FF7A4C'},
-        {'name':'IEEE Club', 'email':'ieee@cgcuniversity.in',      'password':'ieee123',     'description':'Institute of Electrical & Electronics', 'color1':'#1e3a8a','color2':'#3b82f6'},
-        {'name':'E-Cell',    'email':'ecell@cgcuniversity.in',     'password':'ecell123',    'description':'Entrepreneurship Cell CGCU',            'color1':'#064e3b','color2':'#10b981'},
-        {'name':'AI Club',   'email':'aiclub@cgcuniversity.in',    'password':'aiclub123',   'description':'Artificial Intelligence & ML Club',     'color1':'#1e1b4b','color2':'#6d28d9'},
-        {'name':'GDSC',      'email':'gdsc@cgcuniversity.in',      'password':'gdsc123',     'description':'Google Developer Student Club',         'color1':'#1e3a8a','color2':'#4285F4'},
-        {'name':'Code Club', 'email':'codeclub@cgcuniversity.in',  'password':'code123',     'description':'Competitive Programming Club',          'color1':'#581c87','color2':'#c026d3'},
-        {'name':'Robotics',  'email':'robotics@cgcuniversity.in',  'password':'robotics123', 'description':'Robotics & IoT Club',                   'color1':'#064e3b','color2':'#0d9488'},
-        {'name':'CyberSec',  'email':'cybersec@cgcuniversity.in',  'password':'cybersec123', 'description':'Cyber Security Club',                   'color1':'#1a0a0a','color2':'#dc2626'},
-    ]
-    added = 0
-    for c in clubs_data:
-        if not Club.query.filter_by(email=c['email']).first():
-            club = Club(name=c['name'], email=c['email'],
-                        password_hash=generate_password_hash(c['password']),
-                        description=c['description'], color1=c['color1'], color2=c['color2'])
-            db.session.add(club)
-            added += 1
-    if added:
-        db.session.commit()
-        print(f'✅ Seeded {added} clubs')
-
-@app.route('/api/setup', methods=['POST'])
-def setup():
-    with app.app_context():
-        db.create_all()
-        seed_clubs()
-    return jsonify({'message': 'Database ready and clubs seeded!'}), 200
-
-@app.route('/api/migrate', methods=['POST'])
-def migrate():
-    from sqlalchemy import text
-    sql = """
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS branch  VARCHAR(100);
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS year    VARCHAR(50);
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS roll_no VARCHAR(50);
-    ALTER TABLE event ADD COLUMN IF NOT EXISTS category    VARCHAR(50)  DEFAULT 'Workshop';
-    ALTER TABLE event ADD COLUMN IF NOT EXISTS time_str    VARCHAR(50);
-    ALTER TABLE event ADD COLUMN IF NOT EXISTS venue       VARCHAR(200) DEFAULT 'CGCU Mohali';
-    ALTER TABLE event ADD COLUMN IF NOT EXISTS max_slots   INTEGER      DEFAULT 100;
-    ALTER TABLE event ADD COLUMN IF NOT EXISTS price       INTEGER      DEFAULT 0;
-    ALTER TABLE event ADD COLUMN IF NOT EXISTS team_size   VARCHAR(50)  DEFAULT 'Individual';
-    ALTER TABLE event ADD COLUMN IF NOT EXISTS status      VARCHAR(20)  DEFAULT 'upcoming';
-    ALTER TABLE event ADD COLUMN IF NOT EXISTS club_id     INTEGER;
-    ALTER TABLE event ADD COLUMN IF NOT EXISTS created_at  TIMESTAMP    DEFAULT NOW();
-    ALTER TABLE event ADD COLUMN IF NOT EXISTS is_featured BOOLEAN      DEFAULT FALSE;
-    ALTER TABLE event ALTER COLUMN organizer_id DROP NOT NULL;
-    ALTER TABLE registration ADD COLUMN IF NOT EXISTS team_name VARCHAR(100);
-    ALTER TABLE registration ADD COLUMN IF NOT EXISTS phone     VARCHAR(20);
-    ALTER TABLE club ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
-    """
-    try:
-        with db.engine.begin() as conn:
-            conn.execute(text(sql))
-        return jsonify({'message': 'Migration complete!'}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     with app.app_context():
