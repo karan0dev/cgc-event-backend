@@ -66,13 +66,13 @@ class Event(db.Model):
     status        = db.Column(db.String(20), default='upcoming')
     is_featured   = db.Column(db.Boolean, default=False)
     club_id       = db.Column(db.Integer, db.ForeignKey('club.id'), nullable=True)
-    organizer_id  = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    organizer_id  = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
     registrations = db.relationship('Registration', backref='event', lazy=True)
 
 class Registration(db.Model):
     id        = db.Column(db.Integer, primary_key=True)
-    user_id   = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    user_id   = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     event_id  = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
     team_name = db.Column(db.String(100), nullable=True)
     phone     = db.Column(db.String(20), nullable=True)
