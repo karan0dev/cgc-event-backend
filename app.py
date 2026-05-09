@@ -81,6 +81,16 @@ class Registration(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+class Notification(db.Model):
+    __tablename__ = 'notifications'
+    id         = db.Column(db.Integer, primary_key=True)
+    title      = db.Column(db.String(200), nullable=False)
+    message    = db.Column(db.Text, nullable=False)
+    type       = db.Column(db.String(50), default='info')  # info | warning | important
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by = db.Column(db.String(100), default='Super Admin')
+
+
 # ════════════════════════════════════════
 # HELPERS
 # ════════════════════════════════════════
@@ -129,15 +139,12 @@ def register_student():
         return jsonify({'error': 'Email and password required'}), 400
     if User.query.filter_by(email=data['email']).first():
         return jsonify({'error': 'Email already registered'}), 400
-    roll_no_val = data.get('roll_no', '')
-    roll_no_val = str(roll_no_val).strip() if roll_no_val else None
     user = User(
         name=data.get('name', ''),
         email=data['email'],
         password_hash=generate_password_hash(data['password']),
         branch=data.get('branch', ''),
         year=data.get('year', ''),
-        roll_no=roll_no_val,
         role='Student'
     )
     db.session.add(user)
@@ -148,24 +155,17 @@ def register_student():
 @app.route('/api/login', methods=['POST'])
 def login_student():
     data     = request.get_json()
-    login_id = (data.get('identifier') or data.get('email') or '').strip()
+    login_id = data.get('email', '').strip()
     password = data.get('password', '')
 
     if not login_id or not password:
         return jsonify({'error': 'Email/Roll No and password are required'}), 400
 
-    # Try email first, then roll_no (exact + stripped)
+    # Try email first, then roll_no
     if '@' in login_id:
         user = User.query.filter_by(email=login_id.lower()).first()
     else:
         user = User.query.filter_by(roll_no=login_id).first()
-        if not user:
-            # fallback: strip and compare all students
-            all_students = User.query.filter_by(role='Student').all()
-            for s in all_students:
-                if s.roll_no and s.roll_no.strip() == login_id.strip():
-                    user = s
-                    break
 
     if not user or not check_password_hash(user.password_hash, password):
         return jsonify({'error': 'Invalid credentials'}), 401
@@ -226,6 +226,19 @@ def login_club():
 # ════════════════════════════════════════
 # PUBLIC CLUB & EVENT ROUTES
 # ════════════════════════════════════════
+
+@app.route('/api/notifications', methods=['GET'])
+def get_notifications():
+    notifications = Notification.query.order_by(Notification.created_at.desc()).limit(50).all()
+    return jsonify([{
+        'id':         n.id,
+        'title':      n.title,
+        'message':    n.message,
+        'type':       n.type,
+        'created_at': n.created_at.isoformat(),
+        'created_by': n.created_by,
+    } for n in notifications]), 200
+
 
 @app.route('/api/clubs', methods=['GET'])
 def get_clubs():
@@ -535,6 +548,54 @@ def superadmin_delete_student(user_id):
 
 
 # ════════════════════════════════════════
+# SUPER ADMIN — BROADCAST NOTIFICATIONS
+# ════════════════════════════════════════
+
+@app.route('/api/superadmin/notifications', methods=['GET'])
+@jwt_required()
+def superadmin_get_notifications():
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    notifications = Notification.query.order_by(Notification.created_at.desc()).all()
+    return jsonify([{
+        'id':         n.id,
+        'title':      n.title,
+        'message':    n.message,
+        'type':       n.type,
+        'created_at': n.created_at.isoformat(),
+        'created_by': n.created_by,
+    } for n in notifications]), 200
+
+@app.route('/api/superadmin/notifications', methods=['POST'])
+@jwt_required()
+def superadmin_create_notification():
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    data = request.get_json()
+    if not data or not data.get('title') or not data.get('message'):
+        return jsonify({'error': 'title and message are required'}), 400
+    n = Notification(
+        title=data['title'].strip(),
+        message=data['message'].strip(),
+        type=data.get('type', 'info'),
+        created_by='Super Admin',
+    )
+    db.session.add(n)
+    db.session.commit()
+    return jsonify({'message': 'Notification sent!', 'id': n.id}), 201
+
+@app.route('/api/superadmin/notifications/<int:notif_id>', methods=['DELETE'])
+@jwt_required()
+def superadmin_delete_notification(notif_id):
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    n = Notification.query.get_or_404(notif_id)
+    db.session.delete(n)
+    db.session.commit()
+    return jsonify({'message': 'Notification deleted!'}), 200
+
+
+# ════════════════════════════════════════
 # SETUP + MIGRATE
 # ════════════════════════════════════════
 
@@ -775,6 +836,27 @@ def migrate4():
         return jsonify({'message': 'migrate4 complete! FK constraints fixed.'}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/migrate5', methods=['POST'])
+def migrate5():
+    from sqlalchemy import text
+    sql = """
+    CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title VARCHAR(200) NOT NULL,
+        message TEXT NOT NULL,
+        type VARCHAR(50) DEFAULT 'info',
+        created_at TIMESTAMP DEFAULT NOW(),
+        created_by VARCHAR(100) DEFAULT 'Super Admin'
+    );
+    """
+    # Use db.create_all() instead which works with SQLAlchemy models
+    try:
+        db.create_all()
+        return jsonify({'message': 'migrate5 complete! Notifications table ready.'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     with app.app_context():
