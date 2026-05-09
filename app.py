@@ -59,6 +59,7 @@ class Event(db.Model):
     category      = db.Column(db.String(50), default='Workshop')
     event_date    = db.Column(db.DateTime, nullable=False)
     time_str      = db.Column(db.String(50), nullable=True)
+    end_time_str  = db.Column(db.String(50), nullable=True)
     venue         = db.Column(db.String(200), default='CGCU Mohali')
     max_slots     = db.Column(db.Integer, default=100)
     price         = db.Column(db.Integer, default=0)
@@ -97,7 +98,8 @@ def event_to_dict(e):
     return {
         'id': e.id, 'title': e.title, 'description': e.description,
         'category': e.category, 'event_date': e.event_date.isoformat(),
-        'time_str': e.time_str, 'venue': e.venue,
+        'time_str': e.time_str,
+        'end_time_str': e.end_time_str or '', 'venue': e.venue,
         'max_slots': e.max_slots, 'registered_count': len(e.registrations),
         'price': e.price, 'team_size': e.team_size, 'status': e.status,
         'is_featured': e.is_featured,
@@ -287,7 +289,7 @@ def admin_create_event():
         event = Event(
             title=data['title'], description=data.get('description', ''),
             category=data.get('category', 'Workshop'), event_date=parsed_date,
-            time_str=data.get('time_str', ''), venue=data.get('venue', 'CGCU Mohali'),
+            time_str=data.get('time_str', ''), end_time_str=data.get('end_time_str', ''), venue=data.get('venue', 'CGCU Mohali'),
             max_slots=int(data.get('max_slots', 100)), price=int(data.get('price', 0)),
             team_size=data.get('team_size', 'Individual'), status='upcoming', club_id=club.id,
         )
@@ -338,10 +340,15 @@ def admin_get_registrations(event_id):
     for r in regs:
         user = User.query.get(r.user_id)
         result.append({
-            'id': r.id, 'name': user.name if user else 'Unknown',
-            'email': user.email if user else '', 'branch': user.branch if user else '',
-            'year': user.year if user else '', 'team_name': r.team_name,
-            'phone': r.phone, 'registered_at': r.timestamp.isoformat()
+            'id':           r.id,
+            'name':         user.name    if user else 'Unknown',
+            'email':        user.email   if user else '',
+            'roll_no':      user.roll_no if user else '',
+            'branch':       user.branch  if user else '',
+            'year':         user.year    if user else '',
+            'team_name':    r.team_name  or '',
+            'phone':        r.phone      or '',
+            'registered_at': r.timestamp.isoformat()
         })
     return jsonify(result), 200
 
@@ -465,30 +472,6 @@ def superadmin_delete_event(event_id):
     db.session.commit()
     return jsonify({'message': 'Event deleted!'}), 200
 
-
-@app.route('/api/superadmin/events/<int:event_id>/registrations', methods=['GET'])
-@jwt_required()
-def superadmin_get_event_registrations(event_id):
-    if not is_super_admin():
-        return jsonify({'error': 'Super admin access required'}), 403
-    event = Event.query.get_or_404(event_id)
-    regs  = Registration.query.filter_by(event_id=event_id).all()
-    result = []
-    for r in regs:
-        user = User.query.get(r.user_id)
-        result.append({
-            'id':         r.id,
-            'name':       user.name    if user else 'Unknown',
-            'email':      user.email   if user else '',
-            'roll_no':    user.roll_no if user else '',
-            'branch':     user.branch  if user else '',
-            'year':       user.year    if user else '',
-            'phone':      r.phone      or '',
-            'team_name':  r.team_name  or '',
-            'timestamp':  r.timestamp.isoformat() if r.timestamp else '',
-        })
-    return jsonify({'registrations': result, 'count': len(result)}), 200
-
 @app.route('/api/superadmin/students', methods=['GET'])
 @jwt_required()
 def superadmin_get_students():
@@ -497,9 +480,8 @@ def superadmin_get_students():
     students = User.query.filter_by(role='Student').order_by(User.id.desc()).all()
     return jsonify([{
         'id': s.id, 'name': s.name, 'email': s.email,
-        'roll_no': s.roll_no or '',
-        'branch': s.branch or '', 'year': s.year or '',
-        'registrations': Registration.query.filter_by(user_id=s.id).count(),
+        'branch': s.branch, 'year': s.year,
+        'registrations': len(s.registrations),
     } for s in students]), 200
 
 @app.route('/api/superadmin/students/<int:user_id>', methods=['DELETE'])
@@ -561,6 +543,7 @@ def migrate():
     ALTER TABLE "user" ADD COLUMN IF NOT EXISTS year VARCHAR(20);
     ALTER TABLE event ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'Workshop';
     ALTER TABLE event ADD COLUMN IF NOT EXISTS time_str VARCHAR(50);
+    ALTER TABLE event ADD COLUMN IF NOT EXISTS end_time_str VARCHAR(50);
     ALTER TABLE event ADD COLUMN IF NOT EXISTS venue VARCHAR(200) DEFAULT 'CGCU Mohali';
     ALTER TABLE event ADD COLUMN IF NOT EXISTS max_slots INTEGER DEFAULT 100;
     ALTER TABLE event ADD COLUMN IF NOT EXISTS price INTEGER DEFAULT 0;
@@ -654,7 +637,7 @@ def admin_update_event(event_id):
         if new_date.date() != event.event_date.date():
             changes.append(f"Date changed to {new_date.strftime('%b %d, %Y')}")
 
-    for field in ['title', 'description', 'category', 'time_str', 'venue', 'team_size', 'status']:
+    for field in ['title', 'description', 'category', 'time_str', 'end_time_str', 'venue', 'team_size', 'status']:
         if field in data:
             setattr(event, field, data[field])
     if 'max_slots' in data: event.max_slots = int(data['max_slots'])
