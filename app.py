@@ -465,6 +465,30 @@ def superadmin_delete_event(event_id):
     db.session.commit()
     return jsonify({'message': 'Event deleted!'}), 200
 
+
+@app.route('/api/superadmin/events/<int:event_id>/registrations', methods=['GET'])
+@jwt_required()
+def superadmin_get_event_registrations(event_id):
+    if not is_super_admin():
+        return jsonify({'error': 'Super admin access required'}), 403
+    event = Event.query.get_or_404(event_id)
+    regs  = Registration.query.filter_by(event_id=event_id).all()
+    result = []
+    for r in regs:
+        user = User.query.get(r.user_id)
+        result.append({
+            'id':         r.id,
+            'name':       user.name    if user else 'Unknown',
+            'email':      user.email   if user else '',
+            'roll_no':    user.roll_no if user else '',
+            'branch':     user.branch  if user else '',
+            'year':       user.year    if user else '',
+            'phone':      r.phone      or '',
+            'team_name':  r.team_name  or '',
+            'timestamp':  r.timestamp.isoformat() if r.timestamp else '',
+        })
+    return jsonify({'registrations': result, 'count': len(result)}), 200
+
 @app.route('/api/superadmin/students', methods=['GET'])
 @jwt_required()
 def superadmin_get_students():
@@ -473,8 +497,9 @@ def superadmin_get_students():
     students = User.query.filter_by(role='Student').order_by(User.id.desc()).all()
     return jsonify([{
         'id': s.id, 'name': s.name, 'email': s.email,
-        'branch': s.branch, 'year': s.year,
-        'registrations': len(s.registrations),
+        'roll_no': s.roll_no or '',
+        'branch': s.branch or '', 'year': s.year or '',
+        'registrations': Registration.query.filter_by(user_id=s.id).count(),
     } for s in students]), 200
 
 @app.route('/api/superadmin/students/<int:user_id>', methods=['DELETE'])
@@ -734,4 +759,4 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
     port = int(os.environ.get('PORT', 8080))
-    app.run(debug=False, host='0.0.0.0', port=port)
+    app.run(debug=False, host='0.0.0.0', port=port)s
