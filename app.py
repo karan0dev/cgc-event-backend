@@ -129,12 +129,15 @@ def register_student():
         return jsonify({'error': 'Email and password required'}), 400
     if User.query.filter_by(email=data['email']).first():
         return jsonify({'error': 'Email already registered'}), 400
+    roll_no_val = data.get('roll_no', '')
+    roll_no_val = str(roll_no_val).strip() if roll_no_val else None
     user = User(
         name=data.get('name', ''),
         email=data['email'],
         password_hash=generate_password_hash(data['password']),
         branch=data.get('branch', ''),
         year=data.get('year', ''),
+        roll_no=roll_no_val,
         role='Student'
     )
     db.session.add(user)
@@ -145,17 +148,24 @@ def register_student():
 @app.route('/api/login', methods=['POST'])
 def login_student():
     data     = request.get_json()
-    login_id = data.get('email', '').strip()
+    login_id = (data.get('identifier') or data.get('email') or '').strip()
     password = data.get('password', '')
 
     if not login_id or not password:
         return jsonify({'error': 'Email/Roll No and password are required'}), 400
 
-    # Try email first, then roll_no
+    # Try email first, then roll_no (exact + stripped)
     if '@' in login_id:
         user = User.query.filter_by(email=login_id.lower()).first()
     else:
         user = User.query.filter_by(roll_no=login_id).first()
+        if not user:
+            # fallback: strip and compare all students
+            all_students = User.query.filter_by(role='Student').all()
+            for s in all_students:
+                if s.roll_no and s.roll_no.strip() == login_id.strip():
+                    user = s
+                    break
 
     if not user or not check_password_hash(user.password_hash, password):
         return jsonify({'error': 'Invalid credentials'}), 401
