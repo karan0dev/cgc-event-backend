@@ -6,6 +6,8 @@ import os
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 load_dotenv()
 
@@ -22,6 +24,12 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=[],
+    storage_uri='memory://'
+)
 
 # ════════════════════════════════════════
 # DATABASE MODELS
@@ -92,6 +100,14 @@ class Notification(db.Model):
 
 
 # ════════════════════════════════════════
+# ERROR HANDLERS
+# ════════════════════════════════════════
+
+@app.errorhandler(429)
+def ratelimit_error(e):
+    return jsonify({'error': 'Too many requests. Please slow down and try again.'}), 429
+
+# ════════════════════════════════════════
 # HELPERS
 # ════════════════════════════════════════
 
@@ -133,6 +149,7 @@ def is_super_admin():
 # ════════════════════════════════════════
 
 @app.route('/api/register', methods=['POST'])
+@limiter.limit('5 per minute')
 def register_student():
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password'):
@@ -164,6 +181,7 @@ def register_student():
     }), 201
 
 @app.route('/api/login', methods=['POST'])
+@limiter.limit('10 per minute')
 def login_student():
     data     = request.get_json()
     login_id = (data.get('identifier') or data.get('email') or '').strip()
@@ -225,6 +243,7 @@ def register_club():
     return jsonify({'message': f"Club '{club.name}' registered!", 'id': club.id}), 201
 
 @app.route('/api/clubs/login', methods=['POST'])
+@limiter.limit('5 per minute')
 def login_club():
     data = request.get_json()
     club = Club.query.filter_by(email=data.get('email', '').lower()).first()
@@ -289,6 +308,7 @@ def get_event(event_id):
 
 @app.route('/api/events/<int:event_id>/register', methods=['POST'])
 @jwt_required()
+@limiter.limit('20 per minute')
 def register_for_event(event_id):
     identity = get_jwt_identity()
     if not identity.startswith('student:'):
@@ -400,6 +420,7 @@ def admin_get_registrations(event_id):
 # ════════════════════════════════════════
 
 @app.route('/api/superadmin/login', methods=['POST'])
+@limiter.limit('5 per minute')
 def superadmin_login():
     data = request.get_json()
     if data.get('email') == SUPER_ADMIN_EMAIL and data.get('password') == SUPER_ADMIN_PASSWORD:
@@ -797,6 +818,7 @@ def student_event_updates():
 import secrets, string
 
 @app.route('/api/forgot-password', methods=['POST'])
+@limiter.limit('3 per minute')
 def forgot_password():
     data  = request.get_json()
     email = data.get('email', '').strip().lower()
