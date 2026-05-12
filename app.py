@@ -60,7 +60,7 @@ class Event(db.Model):
     event_date    = db.Column(db.DateTime, nullable=False)
     time_str      = db.Column(db.String(50), nullable=True)
     end_time_str  = db.Column(db.String(50), nullable=True)
-    end_time_str  = db.Column(db.String(50), nullable=True)
+    poster_url    = db.Column(db.String(500), nullable=True)
     venue         = db.Column(db.String(200), default='CGCU Mohali')
     max_slots     = db.Column(db.Integer, default=100)
     price         = db.Column(db.Integer, default=0)
@@ -111,7 +111,8 @@ def event_to_dict(e):
         'category': e.category, 'event_date': e.event_date.isoformat(),
         'time_str': e.time_str,
         'end_time_str': e.end_time_str or '',
-        'end_time_str': e.end_time_str or '', 'venue': e.venue,
+        'poster_url':   e.poster_url   or '',
+        'venue': e.venue,
         'max_slots': e.max_slots, 'registered_count': len(e.registrations),
         'price': e.price, 'team_size': e.team_size, 'status': e.status,
         'is_featured': e.is_featured,
@@ -331,7 +332,7 @@ def admin_create_event():
         event = Event(
             title=data['title'], description=data.get('description', ''),
             category=data.get('category', 'Workshop'), event_date=parsed_date,
-            time_str=data.get('time_str', ''), end_time_str=data.get('end_time_str', ''), venue=data.get('venue', 'CGCU Mohali'),
+            time_str=data.get('time_str', ''), end_time_str=data.get('end_time_str', ''), poster_url=data.get('poster_url'), venue=data.get('venue', 'CGCU Mohali'),
             max_slots=int(data.get('max_slots', 100)), price=int(data.get('price', 0)),
             team_size=data.get('team_size', 'Individual'), status='upcoming', club_id=club.id,
         )
@@ -659,7 +660,7 @@ def migrate():
     ALTER TABLE event ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'Workshop';
     ALTER TABLE event ADD COLUMN IF NOT EXISTS time_str VARCHAR(50);
     ALTER TABLE event ADD COLUMN IF NOT EXISTS end_time_str VARCHAR(50);
-    ALTER TABLE event ADD COLUMN IF NOT EXISTS end_time_str VARCHAR(50);
+    ALTER TABLE event ADD COLUMN IF NOT EXISTS poster_url VARCHAR(500);
     ALTER TABLE event ADD COLUMN IF NOT EXISTS venue VARCHAR(200) DEFAULT 'CGCU Mohali';
     ALTER TABLE event ADD COLUMN IF NOT EXISTS max_slots INTEGER DEFAULT 100;
     ALTER TABLE event ADD COLUMN IF NOT EXISTS price INTEGER DEFAULT 0;
@@ -753,7 +754,7 @@ def admin_update_event(event_id):
         if new_date.date() != event.event_date.date():
             changes.append(f"Date changed to {new_date.strftime('%b %d, %Y')}")
 
-    for field in ['title', 'description', 'category', 'time_str', 'end_time_str', 'venue', 'team_size', 'status']:
+    for field in ['title', 'description', 'category', 'time_str', 'end_time_str', 'poster_url', 'venue', 'team_size', 'status']:
         if field in data:
             setattr(event, field, data[field])
     if 'max_slots' in data: event.max_slots = int(data['max_slots'])
@@ -823,15 +824,17 @@ def update_student_profile():
     user_id = int(identity.split(':')[1])
     user    = User.query.get_or_404(user_id)
     data    = request.get_json()
-    if 'name'   in data and data['name']:   user.name   = data['name'].strip()
-    if 'branch' in data:                    user.branch = data['branch'].strip()
-    if 'year'   in data:                    user.year   = data['year'].strip()
+    if 'name'    in data and data['name']:  user.name    = data['name'].strip()
+    if 'branch'  in data:                   user.branch  = data['branch'].strip()
+    if 'year'    in data:                   user.year    = data['year'].strip()
+    if 'roll_no' in data and data['roll_no']: user.roll_no = str(data['roll_no']).strip()
     db.session.commit()
     return jsonify({
         'message': 'Profile updated!',
         'name':    user.name,
         'branch':  user.branch,
         'year':    user.year,
+        'roll_no': user.roll_no or '',
     }), 200
 
 
@@ -874,61 +877,6 @@ def migrate5():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-
-
-@app.route('/api/student/change-email', methods=['POST'])
-@jwt_required()
-def change_email():
-    identity = get_jwt_identity()
-    if not identity.startswith('student:'):
-        return jsonify({'error': 'Student access required'}), 403
-    user_id = int(identity.split(':')[1])
-    user    = User.query.get_or_404(user_id)
-    data    = request.get_json()
-    new_email = data.get('new_email', '').strip().lower()
-    password  = data.get('password', '')
-    if not new_email or '@' not in new_email:
-        return jsonify({'error': 'Valid email required'}), 400
-    if not check_password_hash(user.password_hash, password):
-        return jsonify({'error': 'Incorrect current password'}), 401
-    if User.query.filter_by(email=new_email).first():
-        return jsonify({'error': 'Email already in use'}), 400
-    user.email = new_email
-    db.session.commit()
-    return jsonify({'message': 'Email updated!', 'email': user.email}), 200
-
-@app.route('/api/student/change-password', methods=['POST'])
-@jwt_required()
-def change_password():
-    identity = get_jwt_identity()
-    if not identity.startswith('student:'):
-        return jsonify({'error': 'Student access required'}), 403
-    user_id  = int(identity.split(':')[1])
-    user     = User.query.get_or_404(user_id)
-    data     = request.get_json()
-    curr     = data.get('current_password', '')
-    new_pass = data.get('new_password', '')
-    if not check_password_hash(user.password_hash, curr):
-        return jsonify({'error': 'Incorrect current password'}), 401
-    if len(new_pass) < 6:
-        return jsonify({'error': 'New password must be at least 6 characters'}), 400
-    user.password_hash = generate_password_hash(new_pass)
-    db.session.commit()
-    return jsonify({'message': 'Password changed!'}), 200
-
-@app.route('/api/student/delete-account', methods=['DELETE'])
-@jwt_required()
-def delete_account():
-    identity = get_jwt_identity()
-    if not identity.startswith('student:'):
-        return jsonify({'error': 'Student access required'}), 403
-    user_id = int(identity.split(':')[1])
-    user    = User.query.get_or_404(user_id)
-    Registration.query.filter_by(user_id=user_id).delete(synchronize_session=False)
-    db.session.expire_all()
-    db.session.delete(user)
-    db.session.commit()
-    return jsonify({'message': 'Account deleted!'}), 200
 
 if __name__ == '__main__':
     with app.app_context():
