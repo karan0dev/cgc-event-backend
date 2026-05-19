@@ -838,6 +838,65 @@ def update_student_profile():
     }), 200
 
 
+# ════════════════════════════════════════
+# STUDENT ACCOUNT SETTINGS
+# ════════════════════════════════════════
+
+@app.route('/api/student/change-password', methods=['POST'])
+@jwt_required()
+def change_password():
+    identity = get_jwt_identity()
+    if not identity.startswith('student:'):
+        return jsonify({'error': 'Student access required'}), 403
+    user_id = int(identity.split(':')[1])
+    user    = User.query.get_or_404(user_id)
+    data    = request.get_json() or {}
+    current = data.get('current_password', '')
+    new_pwd = data.get('new_password', '')
+    if not check_password_hash(user.password_hash, current):
+        return jsonify({'error': 'Current password is incorrect'}), 400
+    if len(new_pwd) < 6:
+        return jsonify({'error': 'New password must be at least 6 characters'}), 400
+    user.password_hash = generate_password_hash(new_pwd)
+    db.session.commit()
+    return jsonify({'message': 'Password changed successfully!'}), 200
+
+@app.route('/api/student/change-email', methods=['POST'])
+@jwt_required()
+def change_email():
+    identity = get_jwt_identity()
+    if not identity.startswith('student:'):
+        return jsonify({'error': 'Student access required'}), 403
+    user_id   = int(identity.split(':')[1])
+    user      = User.query.get_or_404(user_id)
+    data      = request.get_json() or {}
+    new_email = data.get('new_email', '').strip().lower()
+    current   = data.get('current_password', '')
+    if not check_password_hash(user.password_hash, current):
+        return jsonify({'error': 'Current password is incorrect'}), 400
+    if not new_email or '@' not in new_email:
+        return jsonify({'error': 'Invalid email address'}), 400
+    if User.query.filter_by(email=new_email).first():
+        return jsonify({'error': 'Email already in use by another account'}), 400
+    user.email = new_email
+    db.session.commit()
+    return jsonify({'message': 'Email changed successfully!', 'email': user.email}), 200
+
+@app.route('/api/student/delete-account', methods=['DELETE'])
+@jwt_required()
+def delete_account():
+    identity = get_jwt_identity()
+    if not identity.startswith('student:'):
+        return jsonify({'error': 'Student access required'}), 403
+    user_id = int(identity.split(':')[1])
+    user    = User.query.get_or_404(user_id)
+    Registration.query.filter_by(user_id=user_id).delete(synchronize_session=False)
+    db.session.expire_all()
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({'message': 'Account deleted successfully'}), 200
+
+
 @app.route('/api/migrate4', methods=['POST'])
 def migrate4():
     from sqlalchemy import text
