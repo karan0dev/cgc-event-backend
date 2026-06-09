@@ -61,6 +61,8 @@ class Event(db.Model):
     time_str      = db.Column(db.String(50), nullable=True)
     end_time_str  = db.Column(db.String(50), nullable=True)
     poster_url    = db.Column(db.String(500), nullable=True)
+    tagline       = db.Column(db.String(200), nullable=True)
+    visual_emoji  = db.Column(db.String(10),  nullable=True)
     venue         = db.Column(db.String(200), default='CGCU Mohali')
     max_slots     = db.Column(db.Integer, default=100)
     price         = db.Column(db.Integer, default=0)
@@ -112,6 +114,8 @@ def event_to_dict(e):
         'time_str': e.time_str,
         'end_time_str': e.end_time_str or '',
         'poster_url':   e.poster_url   or '',
+        'tagline':      e.tagline      or '',
+        'visual_emoji': e.visual_emoji or '',
         'venue': e.venue,
         'max_slots': e.max_slots, 'registered_count': len(e.registrations),
         'price': e.price, 'team_size': e.team_size, 'status': e.status,
@@ -334,6 +338,7 @@ def admin_create_event():
             category=data.get('category', 'Workshop'), event_date=parsed_date,
             time_str=data.get('time_str', ''), end_time_str=data.get('end_time_str', ''), poster_url=data.get('poster_url'), venue=data.get('venue', 'CGCU Mohali'),
             max_slots=int(data.get('max_slots', 100)), price=int(data.get('price', 0)),
+            tagline=data.get('tagline'), visual_emoji=data.get('visual_emoji'),
             team_size=data.get('team_size', 'Individual'), status='upcoming', club_id=club.id,
         )
         db.session.add(event)
@@ -754,7 +759,7 @@ def admin_update_event(event_id):
         if new_date.date() != event.event_date.date():
             changes.append(f"Date changed to {new_date.strftime('%b %d, %Y')}")
 
-    for field in ['title', 'description', 'category', 'time_str', 'end_time_str', 'poster_url', 'venue', 'team_size', 'status']:
+    for field in ['title', 'description', 'category', 'time_str', 'end_time_str', 'poster_url', 'tagline', 'visual_emoji', 'venue', 'team_size', 'status']:
         if field in data:
             setattr(event, field, data[field])
     if 'max_slots' in data: event.max_slots = int(data['max_slots'])
@@ -915,6 +920,18 @@ def migrate4():
         return jsonify({'message': 'migrate4 complete! FK constraints fixed.'}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/migrate6', methods=['POST'])
+def migrate6():
+    try:
+        with db.engine.connect() as conn:
+            conn.execute(db.text("ALTER TABLE event ADD COLUMN IF NOT EXISTS tagline VARCHAR(200);"))
+            conn.execute(db.text("ALTER TABLE event ADD COLUMN IF NOT EXISTS visual_emoji VARCHAR(10);"))
+            conn.commit()
+        return jsonify({'message': 'migrate6 complete! tagline + visual_emoji columns added.'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/migrate5', methods=['POST'])
 def migrate5():
